@@ -216,6 +216,36 @@ def remove_object_retention(s3_client, bucket: str, key: str):
 
     time.sleep(1)
 
+def recover_deleted_object(s3_client, bucket: str, key: str):
+    response = s3_client.list_object_versions(
+        Bucket=bucket,
+        Prefix=key
+    )
+
+    delete_markers = response.get("DeleteMarkers", [])
+
+    latest_marker = None
+
+    for marker in delete_markers:
+        if marker["Key"] == key and marker.get("IsLatest"):
+            latest_marker = marker
+            break
+
+    if latest_marker is None:
+        print(f"No latest delete marker found for {key}")
+        return
+
+    s3_client.delete_object(
+        Bucket=bucket,
+        Key=key,
+        VersionId=latest_marker["VersionId"]
+    )
+
+    print(
+        f"Recovered {key} by deleting delete marker "
+        f"{latest_marker['VersionId']}"
+    )
+
 def main() -> int:
     args = load_config()
 
@@ -260,7 +290,13 @@ def main() -> int:
     # list all objects
     list_objects(s3_client, args.bucket)
 
-    # fully delete object 1
+    # recover object 1
+    recover_deleted_object(s3_client, args.bucket, "OBJECT_1")
+
+    # list all objects
+    list_objects(s3_client, args.bucket)
+
+    # fully delete object 1 (no need to run detele_object() first, as fully_delete_object() will delete all versions and markers)
     fully_delete_object(s3_client, args.bucket, "OBJECT_1")
 
     # fully delete object 2
