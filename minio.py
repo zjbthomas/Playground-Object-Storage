@@ -50,14 +50,16 @@ def bucket_exists(s3_client, bucket: str) -> bool:
         # If the bucket doesn’t exist or you don’t have permission to access it, the HEAD request returns a generic 400 Bad Request, 403 Forbidden, or 404 Not Found HTTP status code. A message body isn’t included, so you can’t determine the exception beyond these HTTP response codes.
         return False
 
-def create_bucket(s3_client, bucket: str):
+def create_bucket(s3_client,
+                  bucket: str,
+                  object_lock_enabled: bool = True):
     if bucket_exists(s3_client, bucket):
         print(f"Bucket {bucket} already exists")
         return
     
     s3_client.create_bucket(
         Bucket=bucket,
-        ObjectLockEnabledForBucket=True # Retention: Bucket must enable Object Lock FIRST
+        ObjectLockEnabledForBucket=object_lock_enabled # Retention: Bucket must enable Object Lock FIRST
     )
     print(f"Bucket {bucket} created")
 
@@ -107,9 +109,11 @@ def upload_object(s3_client,
                   file_path: str,
                   retention: bool,
                   retention_days: int = 0):
+    # first upload file (high-level transfer manager, multi-part support for large files)
     s3_client.upload_file(file_path, bucket, key)
     print(f"Object {key} uploaded to bucket {bucket}")
 
+    # then set retention if needed
     if retention:
         s3_client.put_object_retention(
             Bucket=bucket,
@@ -246,6 +250,57 @@ def recover_deleted_object(s3_client, bucket: str, key: str):
         f"{latest_marker['VersionId']}"
     )
 
+def visualize_object_versions(s3_client, bucket: str, key: str):
+    response = s3_client.list_object_versions(
+        Bucket=bucket,
+        Prefix=key
+    )
+
+    records = []
+
+    for version in response.get("Versions", []):
+        if version["Key"] == key:
+            records.append({
+                "type": "VERSION",
+                "key": version["Key"],
+                "version_id": version["VersionId"],
+                "is_latest": version.get("IsLatest", False),
+                "last_modified": version["LastModified"],
+                "size": version.get("Size", 0),
+            })
+
+    for marker in response.get("DeleteMarkers", []):
+        if marker["Key"] == key:
+            records.append({
+                "type": "DELETE_MARKER",
+                "key": marker["Key"],
+                "version_id": marker["VersionId"],
+                "is_latest": marker.get("IsLatest", False),
+                "last_modified": marker["LastModified"],
+                "size": "-",
+            })
+
+    records.sort(
+        key=lambda x: x["last_modified"],
+        reverse=True
+    )
+
+    print(f"\nVersion history for {key} in bucket {bucket}:")
+
+    if not records:
+        print("  No versions or delete markers found.")
+        return
+
+    for i, record in enumerate(records, start=1):
+        latest = " <-- latest" if record["is_latest"] else ""
+
+        print(
+            f"  {i}. [{record['type']}]{latest}\n"
+            f"     VersionId: {record['version_id']}\n"
+            f"     LastModified: {record['last_modified']}\n"
+            f"     Size: {record['size']}"
+        )
+
 def main() -> int:
     args = load_config()
 
@@ -296,6 +351,24 @@ def main() -> int:
     # list all objects
     list_objects(s3_client, args.bucket)
 
+    # delete object 1 again
+    delete_object(s3_client, args.bucket, "OBJECT_1")
+
+    # visualize object 1 versions
+    visualize_object_versions(s3_client, args.bucket, "OBJECT_1")
+
+    # upload object 1 after deletion
+    upload_object(s3_client, args.bucket, "OBJECT_1", args.file, False)
+
+    # visualize object 1 versions
+    visualize_object_versions(s3_client, args.bucket, "OBJECT_1")
+
+    # upload object 1 again (a new version will be created)
+    upload_object(s3_client, args.bucket, "OBJECT_1", args.file, False)
+
+    # visualize object 1 versions
+    visualize_object_versions(s3_client, args.bucket, "OBJECT_1")
+
     # fully delete object 1 (no need to run detele_object() first, as fully_delete_object() will delete all versions and markers)
     fully_delete_object(s3_client, args.bucket, "OBJECT_1")
 
@@ -314,6 +387,24 @@ def main() -> int:
     # delete bucket
     delete_bucket(s3_client, args.bucket)
     
+    # list all bucket
+    list_buckets(s3_client)
+
+    # create a bucket without object lock enabled
+    create_bucket(s3_client, args.bucket, object_lock_enabled=False)
+
+    # list all bucket
+    list_buckets(s3_client)
+
+    # upload object
+    upload_object(s3_client, args.bucket, "OBJECT_3", args.file, False)
+
+    # delete object
+    delete_object(s3_client, args.bucket, "OBJECT_3")
+
+    # delete bucket
+    delete_bucket(s3_client, args.bucket)
+
     # list all bucket
     list_buckets(s3_client)
 
